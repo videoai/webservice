@@ -163,28 +163,6 @@ def do_search(job_dir, image_path):
     shutil.rmtree(job_dir)
     return (True, 'Search successful', search_results) 
 
-
-class InvalidUsage(Exception):
-    status_code = 400
-
-    def __init__(self, message, status_code=None, payload=None):
-        Exception.__init__(self)
-        self.message = message
-        if status_code is not None:
-            self.status_code = status_code
-        self.payload = payload
-
-    def to_dict(self):
-        rv = dict(self.payload or ())
-        rv['message'] = self.message
-        return rv
-
-@app.errorhandler(InvalidUsage)
-def handle_invalid_usage(error):
-    response = jsonify(error.to_dict())
-    response.status_code = error.status_code
-    return response
-
 @app.route('/')
 def index():
     return "Welcome to the small Papillon Web-Service example!"
@@ -193,9 +171,16 @@ def index():
 def enrol():
 
     if request.method == 'POST':
+        
         # get the image
         if 'image' not in request.files:
-            raise InvalidUsage('Need an image file for this routine!')
+            result = {
+                'success': False,
+                'messsage': 'image not in form parameters',
+            }
+            print result
+            return jsonify(result) 
+
         image = request.files['image']
         # get the name 
         name = ''
