@@ -2,6 +2,7 @@ from flask import Flask, request, jsonify
 from celery import Celery
 from celery.signals import worker_process_init
 from flask_sqlalchemy import SQLAlchemy
+from sqlalchemy.orm.exc import NoResultFound
 import shortuuid
 from werkzeug import secure_filename
 import os
@@ -63,35 +64,42 @@ class Description(db.Model, DescriptionMixin):
 @celery.task()
 def do_enrol(name, job_dir, image_path):
 
-   
+    id = -1
+
     # Load the image
     image = papillon.PImage()
     if image.Load(image_path).Failed():
         print 'Failed to load image'
-        return
+        return (False, 'Failed to load image', id)
 
     # Detect the faces in the image
     detection_list = papillon.PDetectionList()
     if detector.Detect(papillon.PFrame(image), detection_list).Failed():
-        print 'Failed to detect faces'
-        return
-   
-    # For each face enrol it
+        print 'Failed to run face detection'
+        return (False, 'Failed to run face detection', id)
+    
     print 'We have found {} faces in {}'.format(detection_list.Size(), image_path)
-    for i in range(0, detection_list.Size()):
+  
+    if detection_list.Size() == 0:
+        print 'Failed to detect any faces in image'
+        return (False, 'Failed to detect any faces in image', id)
 
-        detection = detection_list.Get(i)
+    if detection_list.Size() > 1:
+        print 'Detected more than one face in image'
+        return (False, 'Detected more than one face in image', id)
 
-        description = papillon.PDescription()
-        if describer.Describe(detection, name, papillon.PGuid.CreateUniqueId(), description).Failed():
-            print 'Failed to generate description'
-            return
-        print 'Generated description for {}'.format(name)
+    # Generate description for face 
+    detection = detection_list.Get(0)
+    description = papillon.PDescription()
+    if describer.Describe(detection, name, papillon.PGuid.CreateUniqueId(), description).Failed():
+        print 'Failed to generate description'
+        return (False, 'Failed to generate description')
+    print 'Generated description for {}'.format(name)
 
-        # Lets store it in the database
-        d = Description(name)
-        d.papillon_description = description
-        db.session.add(d)
+    # Lets store it in the database
+    d = Description(name)
+    d.papillon_description = description
+    db.session.add(d)
     
     # commit all changes to database
     db.session.commit()
@@ -99,7 +107,7 @@ def do_enrol(name, job_dir, image_path):
     # tidy-up
     shutil.rmtree(job_dir)
 
-    return 
+    return (True, 'Successfully enrolled {}'.format(name), d.id)
 
 
 @celery.task()
@@ -112,18 +120,19 @@ def do_search(job_dir, image_path):
     for description in descriptions:
         watchlist.Add(description.papillon_description)
     print 'Made a watchlist with {} entries'.format(watchlist.Size())
+    search_results = []
 
     # Load the image
     image = papillon.PImage()
     if image.Load(image_path).Failed():
         print 'Failed to load image'
-        return
+        return (False, 'Failed to load image', search_results)
 
     # Detect the faces in the image
     detection_list = papillon.PDetectionList()
     if detector.Detect(papillon.PFrame(image), detection_list).Failed():
         print 'Failed to detect faces'
-        return
+        return (False, 'Failed to detect face', search_results)
   
     # For each face enrol it
     print 'We have found {} faces in {}'.format(detection_list.Size(), image_path)
@@ -134,7 +143,7 @@ def do_search(job_dir, image_path):
         description = papillon.PDescription()
         if describer.Describe(detection, 'Unknown', papillon.PGuid.CreateUniqueId(), description).Failed():
             print 'Failed to generate description'
-            return
+            return (False, 'Failed to generate description', search_results)
 
         results = papillon.PIdentifyResults() 
         if watchlist.Search(description,
@@ -143,15 +152,16 @@ def do_search(job_dir, image_path):
                             1,
                             0.5).Failed():
             print 'Failed to search watchlist'
-            return
+            return (False, 'Failed to search  watchlist', search_results)
         
         for i in range(0, results.Size()):
             identification_result = results.Get(i)
             print identification_result.ToString()
+            search_results.append(identification_result.ToString())
     
     # tidy-up
     shutil.rmtree(job_dir)
-    return 
+    return (True, 'Search successful', search_results) 
 
 
 class InvalidUsage(Exception):
@@ -200,12 +210,17 @@ def enrol():
         image.save(image_path)
         # pass it off to celery to process asynchronously
         celery_task = do_enrol.apply_async(args=[name, job_folder, image_path])
-        
+        # In this demo, we wait for task to finish.  However, in production this is a bad idea!
+        (success, message, id) = celery_task.get() 
+
         # lets give some data back to the user
         result = {
             'job_id':job_id,
-            'message':'Enrol job for {} queued for processing'.format(name)
+            'success': success,
+            'messsage': message,
+            'id': id
         }
+        print result
         response = jsonify(result)
         return response
 
@@ -227,10 +242,48 @@ def search():
         # pass it off to celery to process asynchronously
         celery_task = do_search.apply_async(args=[job_folder, image_path])
         
+        # In this example we wait for the task to complete, not advised in production though!
+        (success, message, results) = celery_task.get() 
+        
         # lets give some data back to the user
         result = {
             'job_id':job_id,
-            'message':'Search job queued for processing'
+            'success': success,
+            'message': message,
+            'results': results
+        }
+        response = jsonify(result)
+        return response
+
+@app.route('/subject', methods=['GET'])
+def subjects():
+
+    if request.method == 'GET':
+        result = dict() 
+        descriptions = Description.query.all()
+        for description in descriptions:
+            result[description.id] = description.name 
+        response = jsonify(result)
+        return response
+
+@app.route('/subject/<id>', methods=['DELETE'])
+def subject(id):
+
+    if request.method == 'DELETE':
+        try:
+            print 'Deleting {}'.format(id)
+            description = db.session.query(Description).filter(Description.id==id).one()
+            db.session.delete(description)
+            db.session.commit()
+            success = True
+            message = 'Deleted id {}'.format(id)
+        except NoResultFound as e:
+            success = False
+            message = 'Id {} not found'.format(id)
+
+        result = {
+            'success': success,
+            'message': message
         }
         response = jsonify(result)
         return response
