@@ -244,12 +244,16 @@ def search():
 def subjects():
 
     if request.method == 'GET':
-        result = dict() 
+        subjects = list() 
         descriptions = Description.query.all()
         for description in descriptions:
-            result[description.id] = description.name 
-        response = jsonify(result)
-        return response
+            subjects.append({description.id: description.name})
+        result = {
+            'success': True,
+            'message': 'Listed {} subjects'.format(len(subjects)) 
+        }
+        result['subjects'] = subjects
+        return jsonify(result) 
 
 @app.route('/subject/<id>', methods=['DELETE'])
 def subject(id):
