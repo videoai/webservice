@@ -1,0 +1,11 @@
+name: webservice 
+root: . 
+
+windows:
+  - webservice:
+      layout: tiled 
+      panes:
+        - celery -A webservice.celery worker -c 2
+        - python run.py 
+        -  
+
