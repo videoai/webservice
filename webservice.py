@@ -42,7 +42,7 @@ class DescriptionMixin(object):
     def papillon_description(self):
         description = papillon.PDescription()
         ps = papillon.PString(self.description)
-        description.FromBase64(ps)
+        description.FromBase64(str(ps))
         return description
 
     @papillon_description.setter
@@ -306,5 +306,5 @@ def process_init(sender=None, conf=None, **kwargs):
     global describer
     describer = papillon.PDescriber()
     properties = papillon.PProperties()
-    properties.Set('gpuId', int(0))
+    properties.Set('gpuId', int(-1))
     papillon.PDescriber.Create("DescriberDnn", properties, describer)
